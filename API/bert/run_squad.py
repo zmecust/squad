@@ -35,15 +35,15 @@ FLAGS = flags.FLAGS
 
 ## Required parameters
 flags.DEFINE_string(
-    "bert_config_file", "model/bert_config.json",
+    "bert_config_file", None,
     "The config json file corresponding to the pre-trained BERT model. "
     "This specifies the model architecture.")
 
-flags.DEFINE_string("vocab_file", "model/vocab.txt",
+flags.DEFINE_string("vocab_file", None,
                     "The vocabulary file that the BERT model was trained on.")
 
 flags.DEFINE_string(
-    "output_dir", "tmp",
+    "output_dir", None,
     "The output directory where the model checkpoints will be written.")
 
 ## Other parameters
@@ -55,7 +55,7 @@ flags.DEFINE_string(
     "SQuAD json for predictions. E.g., dev-v1.1.json or test-v1.1.json")
 
 flags.DEFINE_string(
-    "init_checkpoint", "model/bert_model.ckpt",
+    "init_checkpoint", None,
     "Initial checkpoint (usually from a pre-trained BERT model).")
 
 flags.DEFINE_bool(
@@ -81,7 +81,7 @@ flags.DEFINE_integer(
 
 flags.DEFINE_bool("do_train", False, "Whether to run training.")
 
-flags.DEFINE_bool("do_predict", True, "Whether to run eval on the dev set.")
+flags.DEFINE_bool("do_predict", False, "Whether to run eval on the dev set.")
 
 flags.DEFINE_integer("train_batch_size", 32, "Total batch size for training.")
 
@@ -224,12 +224,10 @@ class InputFeatures(object):
     self.is_impossible = is_impossible
 
 
-def read_squad_examples(json, is_training):
+def read_squad_examples(input_file, is_training):
   """Read a SQuAD json file into a list of SquadExample."""
-#   with tf.gfile.Open(input_file, "r") as reader:
-#     input_data = json.load(reader)["data"]
-
-  input_data = json
+  with tf.gfile.Open(input_file, "r") as reader:
+    input_data = json.load(reader)["data"]
 
   def is_whitespace(c):
     if c == " " or c == "\t" or c == "\r" or c == "\n" or ord(c) == 0x202F:
@@ -265,9 +263,9 @@ def read_squad_examples(json, is_training):
 
           if FLAGS.version_2_with_negative:
             is_impossible = qa["is_impossible"]
-          if (len(qa["answers"]) != 1) and (not is_impossible):
-            raise ValueError(
-                "For training, each question should have exactly 1 answer.")
+          # if (len(qa["answers"]) != 1) and (not is_impossible):
+          #   raise ValueError(
+          #       "For training, each question should have exactly 1 answer.")
           if not is_impossible:
             answer = qa["answers"][0]
             orig_answer_text = answer["text"]
@@ -916,7 +914,6 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
     all_nbest_json[example.qas_id] = nbest_json
 
   with tf.gfile.GFile(output_prediction_file, "w") as writer:
-    predict_result=json.dumps(all_predictions, indent=4)
     writer.write(json.dumps(all_predictions, indent=4) + "\n")
 
   with tf.gfile.GFile(output_nbest_file, "w") as writer:
@@ -925,8 +922,6 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
   if FLAGS.version_2_with_negative:
     with tf.gfile.GFile(output_null_log_odds_file, "w") as writer:
       writer.write(json.dumps(scores_diff_json, indent=4) + "\n")
-
-  return predict_result
 
 
 def get_final_text(pred_text, orig_text, do_lower_case):
@@ -1111,10 +1106,10 @@ def validate_flags_or_throw(bert_config):
     if not FLAGS.train_file:
       raise ValueError(
           "If `do_train` is True, then `train_file` must be specified.")
-#   if FLAGS.do_predict:
-#     if not FLAGS.predict_file:
-#       raise ValueError(
-#           "If `do_predict` is True, then `predict_file` must be specified.")
+  if FLAGS.do_predict:
+    if not FLAGS.predict_file:
+      raise ValueError(
+          "If `do_predict` is True, then `predict_file` must be specified.")
 
   if FLAGS.max_seq_length > bert_config.max_position_embeddings:
     raise ValueError(
@@ -1128,7 +1123,7 @@ def validate_flags_or_throw(bert_config):
         "(%d) + 3" % (FLAGS.max_seq_length, FLAGS.max_query_length))
 
 
-def main(input_json):
+def main(_):
   tf.logging.set_verbosity(tf.logging.INFO)
 
   bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
@@ -1189,9 +1184,39 @@ def main(input_json):
       train_batch_size=FLAGS.train_batch_size,
       predict_batch_size=FLAGS.predict_batch_size)
 
+  if FLAGS.do_train:
+    # We write to a temporary file to avoid storing very large constant tensors
+    # in memory.
+    train_writer = FeatureWriter(
+        filename=os.path.join(FLAGS.output_dir, "train.tf_record"),
+        is_training=True)
+    convert_examples_to_features(
+        examples=train_examples,
+        tokenizer=tokenizer,
+        max_seq_length=FLAGS.max_seq_length,
+        doc_stride=FLAGS.doc_stride,
+        max_query_length=FLAGS.max_query_length,
+        is_training=True,
+        output_fn=train_writer.process_feature)
+    train_writer.close()
+
+    tf.logging.info("***** Running training *****")
+    tf.logging.info("  Num orig examples = %d", len(train_examples))
+    tf.logging.info("  Num split examples = %d", train_writer.num_features)
+    tf.logging.info("  Batch size = %d", FLAGS.train_batch_size)
+    tf.logging.info("  Num steps = %d", num_train_steps)
+    del train_examples
+
+    train_input_fn = input_fn_builder(
+        input_file=train_writer.filename,
+        seq_length=FLAGS.max_seq_length,
+        is_training=True,
+        drop_remainder=True)
+    estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
+
   if FLAGS.do_predict:
     eval_examples = read_squad_examples(
-        input_json, is_training=False)
+        input_file=FLAGS.predict_file, is_training=False)
 
     eval_writer = FeatureWriter(
         filename=os.path.join(FLAGS.output_dir, "eval.tf_record"),
@@ -1245,9 +1270,14 @@ def main(input_json):
     output_nbest_file = os.path.join(FLAGS.output_dir, "nbest_predictions.json")
     output_null_log_odds_file = os.path.join(FLAGS.output_dir, "null_odds.json")
 
-    predict_result=write_predictions(eval_examples, eval_features, all_results,
+    write_predictions(eval_examples, eval_features, all_results,
                       FLAGS.n_best_size, FLAGS.max_answer_length,
                       FLAGS.do_lower_case, output_prediction_file,
                       output_nbest_file, output_null_log_odds_file)
 
-    return predict_result
+
+if __name__ == "__main__":
+  flags.mark_flag_as_required("vocab_file")
+  flags.mark_flag_as_required("bert_config_file")
+  flags.mark_flag_as_required("output_dir")
+  tf.app.run()
