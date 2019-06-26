@@ -7,7 +7,7 @@ CORS(app, supports_credentials=True)
 
 @app.route('/test', methods=['POST'])
 def test():
-    json = request.json
+    json=request.json
     results=predict.main(json)
     return jsonify(results=results)
 
