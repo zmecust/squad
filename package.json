@@ -12,7 +12,7 @@
   "license": "MIT",
   "dependencies": {
     "axios": "^0.17.1",
-    "node-sass": "^4.7.2",
+    "node-sass": "^4.13.1",
     "vue": "^2.5.13",
     "vue-router": "^3.0.1",
     "nprogress": "^0.2.0"
